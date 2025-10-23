@@ -1,0 +1,305 @@
+---
+title: "Tutorial DADA2"
+author: "Chloé Eudier"
+date: "2025-10-23"
+output: github_document
+---
+
+#   Chargement des données
+
+
+### Chargement de la librarie dada2 pour utiliser les commandes nécessaires à l'analyse de données de séquençage.
+
+```{r}
+library(dada2)
+packageVersion("dada2")
+```
+
+
+
+### Chargement des données et création de la variable path pour indiquer le chemin d'accès aux lectures utilisées.
+
+```{r}
+path<-"~/MiSeq_SOP"
+list.files(path)
+```
+
+
+
+### Lecture du nom des fichiers et création d'une liste des lectures forward (fnFS) et reverse (fnRs) par la manipulation de leur chaîne de caractères variables.
+
+```{r}
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+```
+
+
+
+### Création d'une variable afin d'extraire le nom des échantillons auxquels appartiennent les couples de lectures.
+
+```{r}
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+```
+
+
+
+
+#  Etude des profils de qualité
+
+
+#### Visualisation de la qualité de chaque séquence forward (fwd) grâce au score qualité de chaque nucléotide la composant.
+
+```{r}
+plotQualityProfile(fnFs[1:2])
+```
+
+##### On obtient une heat map nous indiquant la fréquence de chaque score de qualité pour chaque position. Sur les graphiques on observe le score de qualité moyen par la ligne verte, les quartiles de la distributions des scores par les lignes oranges et la proportion des lectures allant jusqu'à  au moins cette position.
+
+
+##### On peut observer que les séquences fwd sont de bonnes qualité en regardant la ligne verte et les lignes oranges qui se maintiennent à un score entre 30 et 40. La qualité diminue cependant sur les dernières bases des séquences donc il faudra couper les 10 derniers nucléotides des séquences (à partir de la position 240) pour augmenter le score.
+
+
+
+#### Visualisation de la qualité de chaque séquence reverse (rs) grâce au score qualité de chaque nucléotide la composant.
+
+```{r}
+plotQualityProfile(fnRs[1:2])
+```
+
+
+##### En revanche, on observe que les séquences rs sont de moins bonne qualité. Il faudra les couper à partir de la position 160 qui est celle à partir de laquelle la qualité des séquences chute.
+
+
+
+
+#   Tronquage et Filtrage
+
+
+
+### Création d'objets (filtFs et filtRs) servant à stocker les séquences filtrées et dont les noms sont rattachés à ceux des échantillons.
+
+```{r}
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+```
+
+
+
+### Filtrage des données en jouant sur différents paramètres de sorte à obtenir un meilleur score de qualité de séquence.
+
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,160),
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=FALSE) # On Windows set multithread=FALSE
+head(out)
+```
+
+
+
+##### Grâce à cet outil, une petite partie des séquences a été retirée pour augmenter le score de qualité de celles-ci. Donc comme expliqué précédemment, les séquences fwd ont été coupées sur les 10 derniers nucléotides et les rs sur les 90 derniers car le score de qualité des bases a chuté bien avant. On obtient ainsi la liste des lectures avant et après filtrage.
+
+
+
+
+#   Aprentissage des taux d'erreurs
+
+
+
+### Estimation du nombre d'erreurs de séquençage dans les échantillons pour différencier les séquences mutées de celles erronées. Le modèle d’erreurs est calculé en alternant l’estimation des taux d’erreur et l’inférence de la composition de l’échantillon jusqu’à ce qu’ils convergent vers une solution cohérente.
+
+
+
+#### Nombre de bases utilisées par le modèle pour les séquences fwd
+
+```{r}
+errF <- learnErrors(filtFs, multithread=TRUE)
+```
+
+
+#### Nombre de bases utilisées par le modèle pour les séquences rs
+
+```{r}
+errR <- learnErrors(filtRs, multithread=TRUE)
+```
+
+
+#### Visualisation des erreurs estimées (pour chaque transition de base possible).
+
+```{r}
+plotErrors(errF, nominalQ=TRUE)
+```
+
+
+##### Les taux d'erreurs observés pour chaque score de qualité sont représentés par un point noir.  La ligne noire indique les taux d'erreur estimés après convergence de l'algorithme d'apprentissage automatique. La ligne rouge indique les taux d'erreur attendus selon la définition nominale du score de qualité. 
+
+
+##### Comme il est possible de le voir sur les graphiques, les taux d'erreurs estimés correspondent bien aux taux observés car les points noirs suivent la ligne rouge pour chaque transition et les taux d'erreurs diminuent avec l'augmentation de la qualité.
+
+
+
+
+#   Inférence des échantillons
+
+
+### Détection des inférences dans les séquences filtrées afin de différencier les vraies séquences biologiques (variants biologiques) des erreurs de séquençage en utilisant un modèle d'erreurs paramétrique. 
+
+
+
+#### Inférences dans les séquences fwd filtrées 
+
+```{r}
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
+```
+
+#### Inférences dans les séquences rs filtrées
+
+```{r}
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
+```
+
+
+#### Evaluation du nombre d'ASVs dans l'échantillon n°1
+
+```{r}
+dadaFs[[1]]
+```
+
+
+##### L'algorithme a trouvé 128 variants de séquence réels à partir des 1979 séquences du premier échantillon.
+
+
+
+
+#   Fusion des séquences paires
+
+
+### Fusion des séquences R1 et R2 pour obtenir les amplicons en entier et observer leur fiabilité. Pour que la fusion se fasse, il faut que les séquences se chevauchent sur au moins 12 nucléotides identiques entre les 2 séquences.
+
+```{r}
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+head(mergers[[1]])
+```
+
+
+##### On obtient ainsi la liste de données pour chaque échantillon qui comprend : la séquence entière, son abondance et les indices de variants de séquence (ASV) fwd et rs qui ont été fusionnées. De plus, les lectures appariées qui ne se chevauchaient pas exactement ont été supprimées pour réduire le risque de résultats erronés.
+
+
+
+
+#   Création d'une table d'ASV
+
+### Construction d'une table d'ASV pour observer l'abondance des séquences dans les échantillons
+
+
+#### Evaluation du nombre d'ASV parmi l'ensemble des échantillons
+
+```{r}
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+```
+
+#### Etude de la distribution de la longueur des séquences
+
+```{r}
+table(nchar(getSequences(seqtab)))
+```
+
+
+##### Comme on peut le voir dans le tableau, on obtient 293 ASVs de différentes longueurs parmi les 20 échantillons. En effet, on trouve 1 séquence de 251 nucléotides (NT), 88 de 252, 196 de 253 NT, 6 de 254 NT et 2 de 255 NT.
+
+
+##### Les longueurs des séquences fusionnées se situent toutes dans la fourchette attendue pour cet amplicon V4.
+
+
+
+#   Eliminitaion des ASVs chimériques
+
+
+### Suppression des ASVs chimériques (séquences non biologiques). Les séquences chimériques sont identifiées si elles peuvent être reconstruites exactement en combinant un segment gauche et un segment droit provenant de deux séquences « parentales » plus abondantes.
+
+
+#### Identification du nombre d'ASVs chimériques
+
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+dim(seqtab.nochim)
+```
+
+##### Ici,il y'a 61 ASVs qui sont en réalité des chimères sur les 293 trouvées précédemment.
+
+
+
+#### Evaluation de la proportion des chimères parmi l'ensemble ASVs 
+
+```{r}
+sum(seqtab.nochim)/sum(seqtab)
+```
+
+
+##### Les chimères représentent donc environ 21 % des variants de séquences fusionnées, mais si l'abondance de ces variants est prise en compte, les chimères ne représentent qu'environ 4 % des lectures de séquence fusionnées puisque 96% des séquences ont été conservées.
+
+
+
+
+#   Tableau de suivi
+
+### Observation du nombre de séquences éliminées à chaque étape pour voir si un maximum de lectures présentent au départ ont été conservées
+
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+
+
+##### Une grande majorité des séquences a été conservée ce qui indique qu'il n'y a pas de problèmes.
+
+
+
+
+#   Assigniation taxonomique des séquences
+
+### Assigniation de taxonomie pour chaque séquences afin d'obtenir des informations sur les différents rangs (Domaine jusqu'à l'espèce si c'est possible) par la comparaison avec des séquences de référence connues
+
+```{r}
+taxa <- assignTaxonomy(seqtab.nochim,"~/Data/silva_nr99_v138.2_toSpecies_trainset.fa.gz", multithread=TRUE)
+```
+
+
+#### Affichage des résultats de l'assignation
+
+```{r}
+taxa.print <- taxa 
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+
+
+##### La majorité des séquences des différents échantillons ont été assignées au phylum des Bacteroidetes. Dans le cas où l'outil ne peut pas assigner précisement des séquences à une espèce spécifique, il va seulement l'assigner aux rangs supérieurs tels que le genre ou la famille.
+
+
+
+
+#   Evaluation de la précision Dada2
+
+
+### Comparaison de la composition de l'échantillon en ASV inferées à la composition attendue de la communauté de référence (Mock community)
+
+```{r}
+unqs.mock <- seqtab.nochim["Mock",]
+unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE)
+cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
+mock.ref <- getSequences(file.path(path, "HMP_MOCK.v35.fasta"))
+match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
+cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
+```
+
+
+##### La Mock community contient 20 souches bactériennes et l'algorithme a identifié 20 ASV qui correspondent exactement aux génomes de référence des membres attendus de la communauté. Le taux d'erreur résiduel après le pipeline DADA2 pour cet échantillon est donc de 0 %.
+
+
+
