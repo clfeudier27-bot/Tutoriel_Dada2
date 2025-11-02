@@ -1,6 +1,10 @@
 ---
 layout: default
 title: Tutoriel Dada2 Chloé Eudier
+output:
+  html_document:
+    self_contained: true
+    theme: flatly
 ---
 
 # 👋 Bienvenue sur mon site
