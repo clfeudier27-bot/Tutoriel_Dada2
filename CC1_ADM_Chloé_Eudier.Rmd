@@ -2,7 +2,7 @@
 title: "Tutorial DADA2"
 author: "Chloé Eudier"
 date: "2025-10-23"
-output: github_document
+output: html_document
 ---
 
 #   Chargement des données
